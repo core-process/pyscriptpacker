@@ -16,7 +16,7 @@ module.exports.pack = function pack(scriptPath) {
             return line;
         }
         return (
-            `import sys, importlib\n`
+            `import sys, importlib.util\n`
             + `${m[1]} = importlib.util.module_from_spec(importlib.util.spec_from_loader(__name__${scriptName != '__init__.py' ? '.rsplit(\'.\', 1)[0]' : ''} + '.${m[1]}', loader=None))\n`
             + `exec('''${escape(pack(path.join(dirPath, m[1] + '.py')))}''', ${m[1]}.__dict__)\n`
             + `sys.modules[__name__${scriptName != '__init__.py' ? '.rsplit(\'.\', 1)[0]' : ''} + '.${m[1]}'] = ${m[1]}`
