@@ -33,7 +33,7 @@ function packEntries(modulePath, moduleName, packList, libraryPaths) {
                         if (!result.has(k)) {
                             result.set(k, v);
                         } else {
-                            if (result.get(k) !== v) {
+                            if (result.get(k).spec !== v.spec || result.get(k).loader !== v.loader) {
                                 throw new Error(`two different scripts for ${k} detected`);
                             }
                         }
@@ -51,13 +51,14 @@ function packEntries(modulePath, moduleName, packList, libraryPaths) {
         else {
             // lookup item path
             const itemPathBase = path.join(modulePath, ...itemName.substr(1).split('.'));
-            const itemPath = [itemPathBase + '.py', path.join(itemPathBase, '__init__.py')]
-                .filter(itemPath => fs.existsSync(itemPath))
-                .pop();
+            const itemPaths = [itemPathBase + '.py', path.join(itemPathBase, '__init__.py')];
+            const itemPath = itemPaths.filter(itemPath => fs.existsSync(itemPath)).pop();
 
             if (!itemPath) {
                 throw new Error(`could not find ${itemName} in module`);
             }
+
+            const isPackage = itemPath == itemPaths[1];
 
             // build qualified name
             const itemNameQualified =
@@ -68,8 +69,10 @@ function packEntries(modulePath, moduleName, packList, libraryPaths) {
             // pack
             result.set(
                 itemNameQualified,
-                `sys.modules[${itemNameCode}] = importlib.util.module_from_spec(importlib.util.spec_from_loader(${itemNameCode}, loader=None))\n`
-                + `exec('''${escape(fs.readFileSync(itemPath, { encoding: 'utf8' }))}''', sys.modules[${itemNameCode}].__dict__)\n`
+                {
+                    spec: `sys.modules[${itemNameCode}] = importlib.util.module_from_spec(importlib.util.spec_from_loader(${itemNameCode}, loader=None, is_package=${isPackage ? 'True' : 'None'}))`,
+                    loader: `exec('''${escape(fs.readFileSync(itemPath, { encoding: 'utf8' }))}''', sys.modules[${itemNameCode}].__dict__)`
+                }
             )
         }
     }
@@ -96,6 +99,12 @@ module.exports.pack = function pack(modulePath, libraryPaths) {
     }
 
     // insert packed entries and assemble result
-    moduleInitFile.splice(insertIdx, 0, `\n\nimport sys, importlib.util\n\n` + [...packedEntries.values()].join('\n'));
+    moduleInitFile.splice(
+        insertIdx, 0,
+        `\n\nimport sys, importlib.util\n\n`
+        + [...packedEntries.values()].map(entry => entry.spec).join('\n\n')
+        + `\n\n`
+        + [...packedEntries.values()].map(entry => entry.loader).join('\n\n')
+    );
     return moduleInitFile.join('\n');
 }
