@@ -13,7 +13,7 @@ function readPackList(refPackListPath) {
         .filter(line => line);
 }
 
-function packEntries(modulePath, moduleName, packList, libraryPaths) {
+function packEntries(dialect, modulePath, libName, packList, libraryPaths) {
 
     const result = new Map();
 
@@ -29,7 +29,7 @@ function packEntries(modulePath, moduleName, packList, libraryPaths) {
                 // if pack list exists, pack module entries
                 if (fs.existsSync(refPackListPath)) {
                     const refPackList = readPackList(refPackListPath);
-                    packEntries(refModulePath, itemName, refPackList, libraryPaths).forEach((v, k) => {
+                    packEntries(dialect, refModulePath, itemName, refPackList, libraryPaths).forEach((v, k) => {
                         if (!result.has(k)) {
                             result.set(k, v);
                         } else {
@@ -62,25 +62,39 @@ function packEntries(modulePath, moduleName, packList, libraryPaths) {
 
             // build qualified name
             const itemNameQualified =
-                (moduleName.endsWith('.') ? moduleName.substr(0, moduleName.length - 1) : moduleName)
+                (libName.endsWith('.') ? libName.substr(0, libName.length - 1) : libName)
                 + (itemName.endsWith('.') ? itemName.substr(0, itemName.length - 1) : itemName);
             const itemNameCode = (itemNameQualified.startsWith('.') ? '__name__ + ' : '') + JSON.stringify(itemNameQualified);
 
+            // build package name
+            const packageName = isPackage ? itemNameQualified : itemNameQualified.substring(0, itemNameQualified.lastIndexOf('.'));
+            const packageNameCode = (packageName.startsWith('.') ? '__name__ + ' : '') + JSON.stringify(packageName);
+
             // pack
-            result.set(
-                itemNameQualified,
-                {
+            let resultItem = null;
+
+            if (dialect == '2.7') {
+                resultItem = {
+                    spec: `sys.modules[${itemNameCode}] = imp.new_module(${itemNameCode})\nsys.modules[${itemNameCode}].__package__ = ${packageNameCode}`,
+                    loader: `exec '''${escape(fs.readFileSync(itemPath, { encoding: 'utf8' }))}''' in sys.modules[${itemNameCode}].__dict__`
+                };
+            } else if (dialect == '3.5') {
+                resultItem = {
                     spec: `sys.modules[${itemNameCode}] = importlib.util.module_from_spec(importlib.util.spec_from_loader(${itemNameCode}, loader=None, is_package=${isPackage ? 'True' : 'None'}))`,
                     loader: `exec('''${escape(fs.readFileSync(itemPath, { encoding: 'utf8' }))}''', sys.modules[${itemNameCode}].__dict__)`
-                }
-            )
+                };
+            } else {
+                throw new Error('unknown dialect');
+            }
+
+            result.set(itemNameQualified, resultItem);
         }
     }
 
     return result;
 }
 
-module.exports.pack = function pack(modulePath, libraryPaths) {
+module.exports.pack = function pack(dialect, modulePath, libraryPaths) {
 
     // read module file and pack list
     const moduleInitFile = fs.readFileSync(path.join(modulePath, '__init__.py'), { encoding: 'utf8' }).split(/\r?\n/);
@@ -90,7 +104,7 @@ module.exports.pack = function pack(modulePath, libraryPaths) {
         throw new Error('last entry of initial pack list should be "."');
     }
 
-    const packedEntries = packEntries(modulePath, '.', packList, libraryPaths)
+    const packedEntries = packEntries(dialect, modulePath, '.', packList, libraryPaths)
 
     // find first import line
     let insertIdx = moduleInitFile.findIndex(line => line.match(/(^|\s+)import(\s+|$)/));
@@ -99,14 +113,21 @@ module.exports.pack = function pack(modulePath, libraryPaths) {
     }
 
     // insert packed entries and assemble result
+    let importHeader = null;
+    if (dialect == '2.7') {
+        importHeader = 'import sys, imp';
+    } else if (dialect == '3.5') {
+        importHeader = 'import sys, importlib.util';
+    } else {
+        throw new Error('unknown dialect');
+    }
+
     moduleInitFile.splice(
         insertIdx, 0,
-        `\nimport sys, importlib.util\n\n`
+        `\n${importHeader}\n\n`
         + `sys.modules[__name__].__package__ = __name__\n`
-        + [...packedEntries.values()].map(entry => entry.spec).join('\n')
-        + `\n\n`
-        + [...packedEntries.values()].map(entry => entry.loader).join('\n\n')
-        + `\n`
+        + [...packedEntries.values()].map(entry => entry.spec).join('\n') + `\n\n`
+        + [...packedEntries.values()].map(entry => entry.loader).join('\n\n') + `\n`
     );
     return moduleInitFile.join('\n');
 }
