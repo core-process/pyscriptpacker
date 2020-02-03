@@ -1,6 +1,6 @@
 {
   "name": "pyscriptpacker",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Bundle Python Scripts",
   "bin" : "./main.js",
   "main": "index.js",

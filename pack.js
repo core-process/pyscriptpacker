@@ -101,10 +101,12 @@ module.exports.pack = function pack(modulePath, libraryPaths) {
     // insert packed entries and assemble result
     moduleInitFile.splice(
         insertIdx, 0,
-        `\n\nimport sys, importlib.util\n\n`
-        + [...packedEntries.values()].map(entry => entry.spec).join('\n\n')
+        `\nimport sys, importlib.util\n\n`
+        + `sys.modules[__name__].__package__ = __name__\n`
+        + [...packedEntries.values()].map(entry => entry.spec).join('\n')
         + `\n\n`
         + [...packedEntries.values()].map(entry => entry.loader).join('\n\n')
+        + `\n`
     );
     return moduleInitFile.join('\n');
 }
