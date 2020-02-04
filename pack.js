@@ -33,7 +33,7 @@ function packEntries(dialect, modulePath, libName, packList, libraryPaths) {
                         if (!result.has(k)) {
                             result.set(k, v);
                         } else {
-                            if (result.get(k).spec !== v.spec || result.get(k).loader !== v.loader) {
+                            if (result.get(k).spec !== v.spec || result.get(k).link !== v.link || result.get(k).loader !== v.loader) {
                                 throw new Error(`two different scripts for ${k} detected`);
                             }
                         }
@@ -70,17 +70,38 @@ function packEntries(dialect, modulePath, libName, packList, libraryPaths) {
             const packageName = isPackage ? itemNameQualified : itemNameQualified.substring(0, itemNameQualified.lastIndexOf('.'));
             const packageNameCode = (packageName.startsWith('.') ? '__name__ + ' : '') + JSON.stringify(packageName);
 
+            // build parent module name
+            let parentModuleName = null;
+            if (itemNameQualified != '.') {
+                const parts = itemNameQualified.split('.');
+                if (parts.length > 1) {
+                    parts.pop();
+                    parentModuleName = parts.join('.');
+                }
+            }
+            const parentModuleNameCode = parentModuleName ? ((parentModuleName.startsWith('.') ? '__name__ + ' : '') + JSON.stringify(parentModuleName)) : null;
+
             // pack
             let resultItem = null;
 
+            let linkCode = '';
+            if (parentModuleNameCode) {
+                linkCode = `setattr(sys.modules[${parentModuleNameCode}], ${JSON.stringify(itemNameQualified.split('.').pop())}, sys.modules[${itemNameCode}])`;
+            }
+
             if (dialect == '2.7') {
                 resultItem = {
-                    spec: `sys.modules[${itemNameCode}] = imp.new_module(${itemNameCode})\nsys.modules[${itemNameCode}].__package__ = ${packageNameCode}`,
+                    spec:
+                        `sys.modules[${itemNameCode}] = imp.new_module(${itemNameCode})\nsys.modules[${itemNameCode}].__name__ = ${itemNameCode}`
+                        + `\nsys.modules[${itemNameCode}].__package__ = ${packageNameCode}`
+                        + (isPackage ? `\nsys.modules[${itemNameCode}].__path__ = []` : ''),
+                    link: linkCode,
                     loader: `exec '''${escape(fs.readFileSync(itemPath, { encoding: 'utf8' }))}''' in sys.modules[${itemNameCode}].__dict__`
                 };
             } else if (dialect == '3.5') {
                 resultItem = {
                     spec: `sys.modules[${itemNameCode}] = importlib.util.module_from_spec(importlib.util.spec_from_loader(${itemNameCode}, loader=None, is_package=${isPackage ? 'True' : 'None'}))`,
+                    link: linkCode,
                     loader: `exec('''${escape(fs.readFileSync(itemPath, { encoding: 'utf8' }))}''', sys.modules[${itemNameCode}].__dict__)`
                 };
             } else {
@@ -127,6 +148,7 @@ module.exports.pack = function pack(dialect, modulePath, libraryPaths) {
         `\n${importHeader}\n\n`
         + `sys.modules[__name__].__package__ = __name__\n`
         + [...packedEntries.values()].map(entry => entry.spec).join('\n') + `\n\n`
+        + [...packedEntries.values()].map(entry => entry.link).join('\n') + `\n\n`
         + [...packedEntries.values()].map(entry => entry.loader).join('\n\n') + `\n`
     );
     return moduleInitFile.join('\n');
