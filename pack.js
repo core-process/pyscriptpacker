@@ -5,6 +5,20 @@ function escape(script) {
     return script.split('\\').join('\\\\').split('\'').join('\\\'');
 }
 
+function findModule(moduleName, isMainModule, libraryPaths) {
+    for (const libraryPath of libraryPaths) {
+        // construct paths of reference module
+        const modulePath = path.join(libraryPath, ...moduleName.split('.'));
+        const packListPath = path.join(modulePath, 'pack.list');
+        const mainScriptPath = path.join(modulePath, '__main__.py');
+        // check if module exists
+        if (fs.existsSync(packListPath) && (!isMainModule || fs.existsSync(mainScriptPath))) {
+            return modulePath;
+        }
+    }
+    return null;
+}
+
 function readPackList(refPackListPath) {
     return fs
         .readFileSync(refPackListPath, { encoding: 'utf8' })
@@ -20,30 +34,22 @@ function packEntries(dialect, modulePath, libName, packList, libraryPaths) {
     for (const itemName of packList) {
         // handle library reference
         if (!itemName.startsWith('.')) {
-            // search in library paths
-            let found = false;
-            for (const libraryPath of libraryPaths) {
-                // construct paths of reference module
-                const refModulePath = path.join(libraryPath, ...itemName.split('.'));
-                const refPackListPath = path.join(refModulePath, 'pack.list');
-                // if pack list exists, pack module entries
-                if (fs.existsSync(refPackListPath)) {
-                    const refPackList = readPackList(refPackListPath);
-                    packEntries(dialect, refModulePath, itemName, refPackList, libraryPaths).forEach((v, k) => {
-                        if (!result.has(k)) {
-                            result.set(k, v);
-                        } else {
-                            if (result.get(k).spec !== v.spec || result.get(k).link !== v.link || result.get(k).loader !== v.loader) {
-                                throw new Error(`two different scripts for ${k} detected`);
-                            }
+            // pack library
+            const refModulePath = findModule(itemName, false, libraryPaths);
+            if (refModulePath) {
+                const refPackList = readPackList(path.join(refModulePath, 'pack.list'));
+                packEntries(dialect, refModulePath, itemName, refPackList, libraryPaths).forEach((v, k) => {
+                    if (!result.has(k)) {
+                        result.set(k, v);
+                    } else {
+                        if (result.get(k).spec !== v.spec || result.get(k).link !== v.link || result.get(k).loader !== v.loader) {
+                            throw new Error(`two different scripts for ${k} detected`);
                         }
-                    });
-                    found = true;
-                    break;
-                }
+                    }
+                });
             }
             // if we reach here, we could not find the reference module
-            if (!found) {
+            else {
                 throw new Error(`could not find ${itemName} in library paths (pack.list available?)`);
             }
         }
@@ -64,29 +70,33 @@ function packEntries(dialect, modulePath, libName, packList, libraryPaths) {
             const itemNameQualified =
                 (libName.endsWith('.') ? libName.substr(0, libName.length - 1) : libName)
                 + (itemName.endsWith('.') ? itemName.substr(0, itemName.length - 1) : itemName);
-            const itemNameCode = (itemNameQualified.startsWith('.') ? '__name__ + ' : '') + JSON.stringify(itemNameQualified);
+            const itemNameCode = JSON.stringify(itemNameQualified);
 
             // build package name
             const packageName = isPackage ? itemNameQualified : itemNameQualified.substring(0, itemNameQualified.lastIndexOf('.'));
-            const packageNameCode = (packageName.startsWith('.') ? '__name__ + ' : '') + JSON.stringify(packageName);
+            const packageNameCode = JSON.stringify(packageName);
 
             // build parent module name
             let parentModuleName = null;
-            if (itemNameQualified != '.') {
+            let parentModuleNameCode = null;
+
+            let localModuleName = null;
+            let localModuleNameCode = null;
+
+            if (itemNameQualified.indexOf('.') !== -1) {
                 const parts = itemNameQualified.split('.');
-                if (parts.length > 1) {
-                    parts.pop();
-                    parentModuleName = parts.join('.');
-                }
+                localModuleName = parts.pop();
+                localModuleNameCode = JSON.stringify(localModuleName);
+                parentModuleName = parts.join('.');
+                parentModuleNameCode = JSON.stringify(parentModuleName);
             }
-            const parentModuleNameCode = parentModuleName ? ((parentModuleName.startsWith('.') ? '__name__ + ' : '') + JSON.stringify(parentModuleName)) : null;
 
             // pack
             let resultItem = null;
 
             let linkCode = '';
             if (parentModuleNameCode) {
-                linkCode = `setattr(sys.modules[${parentModuleNameCode}], ${JSON.stringify(itemNameQualified.split('.').pop())}, sys.modules[${itemNameCode}])`;
+                linkCode = `setattr(sys.modules[${parentModuleNameCode}], ${localModuleNameCode}, sys.modules[${itemNameCode}])`;
             }
 
             if (dialect == '2.7') {
@@ -115,22 +125,19 @@ function packEntries(dialect, modulePath, libName, packList, libraryPaths) {
     return result;
 }
 
-module.exports.pack = function pack(dialect, modulePath, libraryPaths) {
+module.exports.pack = function pack(dialect, moduleName, libraryPaths) {
 
     // read module file and pack list
-    const moduleInitFile = fs.readFileSync(path.join(modulePath, '__init__.py'), { encoding: 'utf8' }).split(/\r?\n/);
+    const modulePath = findModule(moduleName, true, libraryPaths)
+    const mainScript = fs.readFileSync(path.join(modulePath, '__main__.py'), { encoding: 'utf8' }).split(/\r?\n/);
     const packList = readPackList(path.join(modulePath, 'pack.list'));
 
-    if (packList.pop() != '.') {
-        throw new Error('last entry of initial pack list should be "."');
-    }
-
-    const packedEntries = packEntries(dialect, modulePath, '.', packList, libraryPaths)
+    const packedEntries = packEntries(dialect, modulePath, moduleName, packList, libraryPaths)
 
     // find first import line
-    let insertIdx = moduleInitFile.findIndex(line => line.match(/(^|\s+)import(\s+|$)/));
+    let insertIdx = mainScript.findIndex(line => line.match(/(^|\s+)import(\s+|$)/));
     if (insertIdx === -1) {
-        insertIdx = moduleInitFile.length;
+        insertIdx = mainScript.length;
     }
 
     // insert packed entries and assemble result
@@ -143,13 +150,12 @@ module.exports.pack = function pack(dialect, modulePath, libraryPaths) {
         throw new Error('unknown dialect');
     }
 
-    moduleInitFile.splice(
+    mainScript.splice(
         insertIdx, 0,
         `\n${importHeader}\n\n`
-        + `sys.modules[__name__].__package__ = __name__\n`
         + [...packedEntries.values()].map(entry => entry.spec).join('\n') + `\n\n`
         + [...packedEntries.values()].map(entry => entry.link).join('\n') + `\n\n`
         + [...packedEntries.values()].map(entry => entry.loader).join('\n\n') + `\n`
     );
-    return moduleInitFile.join('\n');
+    return mainScript.join('\n');
 }
