@@ -6,7 +6,7 @@ Convert Python packages into a single file.
 
 ```sh
 npm install -g pyscriptpacker
-pyscriptpacker <output-path> <module-path> [<library-path> ...]
+pyscriptpacker <2.7|3.5> <output-path> <module-path> [<library-path> ...]
 ```
 
 ## Examples
