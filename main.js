@@ -5,19 +5,20 @@ const { pack } = require('./pack');
 
 try {
     // check arguments
-    if (process.argv.length < 6) {
-        console.log(`Usage: ${process.argv[0]} ${process.argv[1]} <2.7|3.5> <output-path> <module-name> <library-path> [...]`);
+    if (process.argv.length < 7) {
+        console.log(`Usage: ${process.argv[0]} ${process.argv[1]} <2.7|3.5> <output-path> <product-name> <module-name> <library-path> [...]`);
         process.exit(1);
     }
-    
+
     // extract arguments
     const dialect = process.argv[2];
     const outputPath = process.argv[3];
-    const moduleName = process.argv[4];
-    const libraryPaths = process.argv.slice(5);
+    const productName = process.argv[4];
+    const moduleName = process.argv[5];
+    const libraryPaths = process.argv.slice(6);
 
     // pack
-    const packed = pack(dialect, moduleName, libraryPaths);
+    const packed = pack(dialect, productName, moduleName, libraryPaths);
     fs.writeFileSync(outputPath, packed, { encoding: 'utf8' });
     process.exit(0);
 }

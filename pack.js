@@ -1,11 +1,13 @@
 const fs = require('fs');
 const path = require('path');
-
-function escape(script) {
-    return script.split('\\').join('\\\\').split('\'').join('\\\'');
-}
+const crypto = require('crypto');
 
 function findLibrary(libraryName, isMainLibrary, libraryPaths) {
+
+    if (libraryName.match(/[^\w]/)) {
+        throw new Error('invalid library name');
+    }
+
     for (const libraryBasePath of libraryPaths) {
         // construct library path
         const libraryPath = path.join(libraryBasePath, libraryName);
@@ -21,7 +23,7 @@ function findLibrary(libraryName, isMainLibrary, libraryPaths) {
     throw new Error(`could not find ${packEntry} in library paths (pack.list available?)`);
 }
 
-function packModules(dialect, libraryPath, libraryName, libraryPaths) {
+function packModules(dialect, productName, libraryPath, libraryName, libraryPaths) {
 
     // read pack list
     const packList = fs
@@ -30,21 +32,47 @@ function packModules(dialect, libraryPath, libraryName, libraryPaths) {
         .map(line => line.trim())
         .filter(line => line);
 
-    // pack modules
+    // add product base module
     const modules = new Map();
 
+    {
+        const productNameCode = JSON.stringify(productName);
+        let moduleSpec = null;
+
+        if (dialect == '2.7') {
+            moduleSpec = {
+                alloc:
+                    `sys.modules[${productNameCode}] = imp.new_module(${productNameCode})`
+                    + `\nsys.modules[${productNameCode}].__name__ = ${productNameCode}`
+                    + `\nsys.modules[${productNameCode}].__package__ = ${JSON.stringify(productNameCode)}`
+                    + `\nsys.modules[${productNameCode}].__path__ = []`,
+                link: '',
+                load: ''
+            };
+        } else {
+            moduleSpec = {
+                alloc: `sys.modules[${productNameCode}] = importlib.util.module_from_spec(importlib.util.spec_from_loader(${productNameCode}, loader=None, is_package='True'))`,
+                link: '',
+                load: ''
+            };
+        }
+
+        modules.set(productName, moduleSpec);
+    }
+
+    // pack modules
     for (const packEntry of packList) {
 
         // handle library reference
         if (!packEntry.startsWith('.')) {
             // pack library
-            packModules(dialect, findLibrary(packEntry, false, libraryPaths), packEntry, libraryPaths).forEach((moduleCode, moduleName) => {
+            packModules(dialect, productName, findLibrary(packEntry, false, libraryPaths), packEntry, libraryPaths).forEach((moduleSpec, moduleName) => {
                 if (!modules.has(moduleName)) {
-                    modules.set(moduleName, moduleCode);
+                    modules.set(moduleName, moduleSpec);
                 } else {
-                    if (modules.get(moduleName).spec !== moduleCode.spec
-                        || modules.get(moduleName).link !== moduleCode.link
-                        || modules.get(moduleName).loader !== moduleCode.loader
+                    if (modules.get(moduleName).alloc !== moduleSpec.alloc
+                        || modules.get(moduleName).link !== moduleSpec.link
+                        || modules.get(moduleName).load !== moduleSpec.load
                     ) {
                         throw new Error(`two different scripts for ${moduleName} detected`);
                     }
@@ -62,96 +90,117 @@ function packModules(dialect, libraryPath, libraryName, libraryPaths) {
                 throw new Error(`could not find ${packEntry} in ${libraryName}`);
             }
 
+            // determine if module is a package
             const isPackage = modulePath == modulePaths[1];
 
             // build module name
             const moduleName =
-                (libraryName.endsWith('.') ? libraryName.substr(0, libraryName.length - 1) : libraryName)
+                productName + '.'
+                + (libraryName.endsWith('.') ? libraryName.substr(0, libraryName.length - 1) : libraryName)
                 + (packEntry.endsWith('.') ? packEntry.substr(0, packEntry.length - 1) : packEntry);
             const moduleNameCode = JSON.stringify(moduleName);
 
             // build parent module name
-            let hasParent = false;
-            let moduleLocalName = null;
-            let moduleParentName = null;
-
-            if (moduleName.indexOf('.') !== -1) {
-                hasParent = true;
-                const parts = moduleName.split('.');
-                moduleLocalName = parts.pop();
-                moduleParentName = parts.join('.');
-            }
+            const moduleLocalName = moduleName.split('.').pop();
+            const moduleParentName = moduleName.substr(0, moduleName.length - moduleLocalName.length - 1);
 
             // build package name
             const packageName = isPackage ? moduleName : moduleName.substring(0, moduleName.lastIndexOf('.'));
 
-            // pack
-            let moduleCode = null;
+            // rewrite library imports
+            let moduleScript = fs.readFileSync(modulePath, { encoding: 'utf8' }).split(/\r?\n/);
 
-            let linkCode = '';
-            if (hasParent) {
-                linkCode = `setattr(sys.modules[${JSON.stringify(moduleParentName)}], ${JSON.stringify(moduleLocalName)}, sys.modules[${moduleNameCode}])`;
-            }
+            moduleScript.map(line => {
+                const m = line.match(/^(\s*import\s+)(\w+)(.*)$/);
+                if (m && packList.includes(m[1])) {
+                    return m[0] + productName + '.' + m[1] + m[2];
+                }
+                return line;
+            });
+
+            moduleScript = `'''${moduleScript.join('\n').split('\\').join('\\\\').split('\'').join('\\\'')}'''`;
+
+            // pack
+            let moduleSpec = null;
+
+            const linkCode = `setattr(sys.modules[${JSON.stringify(moduleParentName)}], ${JSON.stringify(moduleLocalName)}, sys.modules[${moduleNameCode}])`;
 
             if (dialect == '2.7') {
-                moduleCode = {
-                    spec:
-                        `sys.modules[${moduleNameCode}] = imp.new_module(${moduleNameCode})\nsys.modules[${moduleNameCode}].__name__ = ${moduleNameCode}`
+                moduleSpec = {
+                    alloc:
+                        `sys.modules[${moduleNameCode}] = imp.new_module(${moduleNameCode})`
+                        + `\nsys.modules[${moduleNameCode}].__name__ = ${moduleNameCode}`
                         + `\nsys.modules[${moduleNameCode}].__package__ = ${JSON.stringify(packageName)}`
                         + (isPackage ? `\nsys.modules[${moduleNameCode}].__path__ = []` : ''),
                     link: linkCode,
-                    loader: `exec '''${escape(fs.readFileSync(modulePath, { encoding: 'utf8' }))}''' in sys.modules[${moduleNameCode}].__dict__`
-                };
-            } else if (dialect == '3.5') {
-                moduleCode = {
-                    spec: `sys.modules[${moduleNameCode}] = importlib.util.module_from_spec(importlib.util.spec_from_loader(${moduleNameCode}, loader=None, is_package=${isPackage ? 'True' : 'None'}))`,
-                    link: linkCode,
-                    loader: `exec('''${escape(fs.readFileSync(modulePath, { encoding: 'utf8' }))}''', sys.modules[${moduleNameCode}].__dict__)`
+                    load: `exec ${moduleScript} in sys.modules[${moduleNameCode}].__dict__`
                 };
             } else {
-                throw new Error('unknown dialect');
+                moduleSpec = {
+                    alloc: `sys.modules[${moduleNameCode}] = importlib.util.module_from_spec(importlib.util.spec_from_loader(${moduleNameCode}, loader=None, is_package=${isPackage ? 'True' : 'None'}))`,
+                    link: linkCode,
+                    load: `exec(${moduleScript}, sys.modules[${moduleNameCode}].__dict__)`
+                };
             }
 
-            modules.set(moduleName, moduleCode);
+            modules.set(moduleName, moduleSpec);
         }
     }
 
     return modules;
 }
 
-module.exports.pack = function pack(dialect, packageName, libraryPaths) {
+module.exports.pack = function pack(dialect, productName, libraryName, libraryPaths) {
 
-    // read module file and pack list
-    const libraryPath = findLibrary(packageName, true, libraryPaths)
+    // generate unique product name
+    if (productName == '*') {
+        productName = crypto.randomBytes(8).toString('hex');
+    }
+
+    // validate args
+    if (dialect != '2.7' && dialect != '3.5') {
+        throw new Error('unknown dialect');
+    }
+
+    if (productName.match(/[^\w]/)) {
+        throw new Error('invalid product name');
+    }
+
+    // ... libraryName will be validated by findLibrary
+
+    // read main script
+    const libraryPath = findLibrary(libraryName, true, libraryPaths)
     const mainScript = fs.readFileSync(path.join(libraryPath, '__main__.py'), { encoding: 'utf8' }).split(/\r?\n/);
 
-    const modules = packModules(dialect, libraryPath, packageName, libraryPaths)
+    // rewrite library imports
+    mainScript.map(line => {
+        const m = line.match(/^(\s*import\s+)(\w+)(.*)$/);
+        if (m && packList.includes(m[1])) {
+            return m[0] + productName + '.' + m[1] + m[2];
+        }
+        return line;
+    });
 
-    // generate unique isolation token
-    const tokenCode = 'import uuid\n__pack_isolation_token = "packed_" + uuid.uuid4().hex + "_"';
-    mainScript.splice(0, 0, tokenCode);
+    // pack modules
+    const modules = packModules(dialect, productName, libraryPath, libraryName, libraryPaths)
 
     // insert packed modules
     let importCode = null;
     if (dialect == '2.7') {
         importCode = 'import sys, imp';
-    } else if (dialect == '3.5') {
-        importCode = 'import sys, importlib.util';
     } else {
-        throw new Error('unknown dialect');
+        importCode = 'import sys, importlib.util';
     }
 
-    let insertIdx = mainScript.findIndex(line => line.match(/^import\s+/));
-    if (insertIdx === -1) {
-        insertIdx = 0;
-    }
+    const packLine = mainScript.findIndex(line => line.match(/^\s*#\s+!!!\s+PACK\s+HERE\s+!!!\s*$/i));
 
     mainScript.splice(
-        insertIdx, 0,
+        packLine !== -1 ? packLine : 0,
+        packLine !== -1 ? 1 : 0,
         `\n${importCode}\n\n`
-        + [...modules.values()].map(mod => mod.spec).join('\n') + `\n\n`
-        + [...modules.values()].map(mod => mod.link).join('\n') + `\n\n`
-        + [...modules.values()].map(mod => mod.loader).join('\n\n') + `\n`
+        + [...modules.values()].map(moduleSpec => moduleSpec.alloc).join('\n') + `\n\n`
+        + [...modules.values()].map(moduleSpec => moduleSpec.link).join('\n') + `\n\n`
+        + [...modules.values()].map(moduleSpec => moduleSpec.load).join('\n\n') + `\n`
     );
 
     // assemble result
