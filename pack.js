@@ -23,14 +23,18 @@ function findLibrary(libraryName, isMainLibrary, libraryPaths) {
     throw new Error(`could not find ${packEntry} in library paths (pack.list available?)`);
 }
 
-function packModules(dialect, productName, libraryPath, libraryName, libraryPaths) {
-
-    // read pack list
-    const packList = fs
+function readPackList(libraryPath) {
+    return fs
         .readFileSync(path.join(libraryPath, 'pack.list'), { encoding: 'utf8' })
         .split(/\r?\n/)
         .map(line => line.trim())
         .filter(line => line);
+}
+
+function packModules(dialect, productName, libraryPath, libraryName, libraryPaths) {
+
+    // read pack list
+    const packList = readPackList(libraryPath);
 
     // add product base module
     const modules = new Map();
@@ -110,10 +114,10 @@ function packModules(dialect, productName, libraryPath, libraryName, libraryPath
             // rewrite library imports
             let moduleScript = fs.readFileSync(modulePath, { encoding: 'utf8' }).split(/\r?\n/);
 
-            moduleScript.map(line => {
+            moduleScript = moduleScript.map(line => {
                 const m = line.match(/^(\s*import\s+)(\w+)(.*)$/);
-                if (m && packList.includes(m[1])) {
-                    return m[0] + productName + '.' + m[1] + m[2];
+                if (m && packList.includes(m[2])) {
+                    return m[1] + productName + '.' + m[2] + m[3];
                 }
                 return line;
             });
@@ -170,13 +174,14 @@ module.exports.pack = function pack(dialect, productName, libraryName, libraryPa
 
     // read main script
     const libraryPath = findLibrary(libraryName, true, libraryPaths)
-    const mainScript = fs.readFileSync(path.join(libraryPath, '__main__.py'), { encoding: 'utf8' }).split(/\r?\n/);
+    let mainScript = fs.readFileSync(path.join(libraryPath, '__main__.py'), { encoding: 'utf8' }).split(/\r?\n/);
 
     // rewrite library imports
-    mainScript.map(line => {
+    const packList = readPackList(libraryPath);
+    mainScript = mainScript.map(line => {
         const m = line.match(/^(\s*import\s+)(\w+)(.*)$/);
-        if (m && packList.includes(m[1])) {
-            return m[0] + productName + '.' + m[1] + m[2];
+        if (m && (m[2] == libraryName || packList.includes(m[2]))) {
+            return m[1] + productName + '.' + m[2] + m[3];
         }
         return line;
     });
