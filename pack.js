@@ -115,9 +115,9 @@ function packModules(dialect, productName, libraryPath, libraryName, libraryPath
             let moduleScript = fs.readFileSync(modulePath, { encoding: 'utf8' }).split(/\r?\n/);
 
             moduleScript = moduleScript.map(line => {
-                const m = line.match(/^(\s*import\s+)(\w+)(.*)$/);
+                const m = line.match(/^(\s*import\s+)(\w+)\s*$/);
                 if (m && packList.includes(m[2])) {
-                    return m[1] + productName + '.' + m[2] + m[3];
+                    return m[1] + productName + '.' + m[2] + ' as ' + m[2];
                 }
                 return line;
             });
@@ -179,9 +179,9 @@ module.exports.pack = function pack(dialect, productName, libraryName, libraryPa
     // rewrite library imports
     const packList = readPackList(libraryPath);
     mainScript = mainScript.map(line => {
-        const m = line.match(/^(\s*import\s+)(\w+)(.*)$/);
+        const m = line.match(/^(\s*import\s+)(\w+)\s*$/);
         if (m && (m[2] == libraryName || packList.includes(m[2]))) {
-            return m[1] + productName + '.' + m[2] + m[3];
+            return m[1] + productName + '.' + m[2] + ' as ' + m[2];
         }
         return line;
     });
