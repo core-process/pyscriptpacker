@@ -137,13 +137,19 @@ function packModules(dialect, productName, libraryPath, libraryName, libraryPath
                         + `\nsys.modules[${moduleNameCode}].__package__ = ${JSON.stringify(packageName)}`
                         + (isPackage ? `\nsys.modules[${moduleNameCode}].__path__ = []` : ''),
                     link: linkCode,
-                    load: `exec ${moduleScript} in sys.modules[${moduleNameCode}].__dict__`
+                    load:
+                        `if '_packer_global_vars' in locals() or '_packer_global_vars' in globals():`
+                        + `\n    sys.modules[${moduleNameCode}].__dict__.update(_packer_global_vars)`
+                        + `\nexec ${moduleScript} in sys.modules[${moduleNameCode}].__dict__`
                 };
             } else {
                 moduleSpec = {
                     alloc: `sys.modules[${moduleNameCode}] = importlib.util.module_from_spec(importlib.util.spec_from_loader(${moduleNameCode}, loader=None, is_package=${isPackage ? 'True' : 'None'}))`,
                     link: linkCode,
-                    load: `exec(${moduleScript}, sys.modules[${moduleNameCode}].__dict__)`
+                    load:
+                        `if '_packer_global_vars' in locals() or '_packer_global_vars' in globals():`
+                        + `\n    sys.modules[${moduleNameCode}].__dict__.update(_packer_global_vars)`
+                        + `\nexec(${moduleScript}, sys.modules[${moduleNameCode}].__dict__)`
                 };
             }
 
