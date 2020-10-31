@@ -9,12 +9,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/core-process/pyscriptpacker.git"
+    "url": "git+https://github.com/coreprocess/pyscriptpacker.git"
   },
   "author": "Niklas Salmoukas <niklas@salmoukas.com>",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/core-process/pyscriptpacker/issues"
+    "url": "https://github.com/coreprocess/pyscriptpacker/issues"
   },
-  "homepage": "https://github.com/core-process/pyscriptpacker#readme"
+  "homepage": "https://github.com/coreprocess/pyscriptpacker#readme"
 }
